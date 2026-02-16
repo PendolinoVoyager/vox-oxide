@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use hound::WavSpec;
 use quinn_proto::crypto::rustls::QuicServerConfig;
@@ -107,16 +107,14 @@ async fn run(options: Opt) -> Result<()> {
         .with_single_cert(certs, key)?;
     server_crypto.alpn_protocols = vec![b"hq-29".to_vec()];
 
-    if options.keylog {
-        server_crypto.key_log = Arc::new(rustls::KeyLogFile::new());
-    }
-
     let mut server_config =
         quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_crypto)?));
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
+    // streams for auth...
+    transport_config.max_concurrent_bidi_streams(5_u8.into());
     transport_config.datagram_receive_buffer_size(Some(1024 * 50));
-
+    transport_config.stream_receive_window(1024_u32.into());
     let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
     eprintln!("listening on {}", endpoint.local_addr()?);
 
@@ -143,7 +141,23 @@ async fn run(options: Opt) -> Result<()> {
 
 async fn handle_connection(conn: quinn::Incoming) -> Result<()> {
     let connection = conn.await?;
+    // Accept first bidirectional stream (control)
+    let (mut send, mut recv) = connection.accept_bi().await?;
 
+    let request = recv.read_to_end(4096).await?;
+    println!("Auth payload: {:?}", request);
+
+    // Validate token / session
+    let valid = true; // your logic here
+
+    if !valid {
+        connection.close(0u32.into(), b"auth failed");
+        return Err(anyhow!("auth failed"));
+    }
+
+    // Send OK
+    send.write_all(b"OK").await.unwrap();
+    send.finish().unwrap();
     info!("established");
 
     playback_loop(connection).await

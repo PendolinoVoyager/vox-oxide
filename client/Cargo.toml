@@ -27,7 +27,6 @@ quinn = "0.11.9"
 quinn-proto = { version = "0.11.13", features = ["aws-lc-rs"] }
 rand = "0.10.0"
 ratatui = "0.30.0"
-ringbuf = "0.4.8"
 rodio = "0.21.1"
 rustls = { version = "0.23.36", features = ["aws-lc-rs"] }
 rvoip-rtp-core = "0.1.26"

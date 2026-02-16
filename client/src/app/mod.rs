@@ -81,11 +81,13 @@ impl Widget for &App {
 
         let counter_text = Text::from(vec![
             Line::from(vec!["Value: ".into(), self.counter.to_string().yellow()]),
-            Line::from(if self.audio_manager.active() {
-                "Now recording audio..."
-            } else {
-                "Audio recording stopped"
-            }),
+            Line::from(
+                if self.audio_manager.active() && !self.audio_manager.is_errored() {
+                    "Now recording audio..."
+                } else {
+                    "Audio recording stopped"
+                },
+            ),
         ]);
         Paragraph::new(counter_text)
             .centered()

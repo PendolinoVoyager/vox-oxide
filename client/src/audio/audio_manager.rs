@@ -1,6 +1,10 @@
+use std::sync::Arc;
+use std::sync::Mutex;
+
 use bytes::Bytes;
-use quinn::VarInt;
-use tokio::{io::AsyncWriteExt, sync::mpsc::Receiver};
+use quinn::{Connection, VarInt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc::Receiver;
 
 use crate::{
     app::App,
@@ -8,7 +12,6 @@ use crate::{
     audio::{self, create_audio_connection},
 };
 
-struct AudioPacket();
 #[derive(Debug, Default)]
 pub struct RoomActiveAudioSession {
     session_id: u32,
@@ -21,6 +24,7 @@ pub struct RoomActiveAudioSession {
 pub struct AudioManager {
     app_config: AppConfig,
     signal_sender: Option<tokio::sync::mpsc::Sender<u8>>,
+    stream_error: Arc<Mutex<Option<anyhow::Error>>>,
     active_session: Option<RoomActiveAudioSession>,
     muted: bool,
     talking: bool,
@@ -30,19 +34,31 @@ impl AudioManager {
         Self {
             app_config,
             active_session: None,
+            stream_error: Arc::new(Mutex::new(None)),
             signal_sender: None,
             muted: false,
             talking: false,
         }
     }
     pub fn join_room(&mut self, room_id: u32) {
+        if self.active() {
+            tracing::warn!("Cannot join new room while being in another one");
+            return;
+        }
+        if self.is_errored() {
+            self.exit_room();
+        }
         let config = self.app_config.clone();
         // send a request to join a room
         self.active_session = Some(RoomActiveAudioSession::default());
         let (sender, receiver) = tokio::sync::mpsc::channel::<u8>(12);
         self.signal_sender = Some(sender);
-
-        tokio::spawn(async move { Self::handle_audio_streaming(config, receiver).await });
+        let error = self.stream_error.clone();
+        tokio::spawn(async move {
+            if let Err(e) = Self::handle_audio_streaming(config, receiver).await {
+                error.lock().unwrap().replace(e);
+            }
+        });
 
         // join room
         // spawn a task to send audio (control via muted and talking to playbac)
@@ -50,39 +66,43 @@ impl AudioManager {
         // else send unconditionally if volume is above ceratain threshold
         // when exit_room is called, just close send and api request to terminate session
     }
-    async fn handle_audio_streaming(config: AppConfig, mut receiver: Receiver<u8>) {
-        let connection = create_audio_connection(config).await.unwrap();
-        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
-
+    async fn handle_audio_streaming(
+        config: AppConfig,
+        mut receiver: Receiver<u8>,
+    ) -> anyhow::Result<()> {
+        let mut connection = create_audio_connection(config).await.unwrap();
+        Self::authenticate_audio_connection(&mut connection).await?;
         let mut audio_source = audio::audio_source::RTPOpusAudioSource::new().unwrap();
         loop {
             tokio::select! {
-                signal = receiver.recv() => {
-                    if signal == Some(0) {
+                Some(signal) = receiver.recv() => {
+                if signal == 0 {
                         tracing::info!("got signal 0!");
                         connection.close(VarInt::from_u32(0), b"done");
-                    drop(audio_source);
                     break;
                 }
             }
 
                 Some(packet) = audio_source.read() => {
                     let bytes = packet.serialize().unwrap();
-                    let _ = socket.send_to(&bytes, "127.0.0.1:10000").await;
                     let res = connection.send_datagram(bytes);
                     if let Err(e) = res {
                         tracing::error!("Failed task: {e}");
                         break;
                     }
+
                 }
             }
         }
+        Ok(())
     }
     pub fn exit_room(&mut self) {
         if self.active_session.is_none() {
             return;
         }
         self.send_signal(0);
+        self.stream_error.clear_poison();
+        self.stream_error = Arc::new(Mutex::new(None));
         self.active_session = None;
         self.signal_sender = None;
     }
@@ -91,9 +111,19 @@ impl AudioManager {
             tokio::spawn(async move { ss.send(signal).await });
         }
     }
-    pub fn set_muted(&mut self, muted: bool) {}
-    pub fn set_talking(&mut self, talking: bool) {}
+
     pub fn active(&self) -> bool {
-        self.active_session.is_some()
+        self.active_session.is_some() || self.signal_sender.is_some()
+    }
+    pub fn is_errored(&self) -> bool {
+        self.stream_error.clone().lock().ok().is_some()
+    }
+    async fn authenticate_audio_connection(connection: &mut Connection) -> anyhow::Result<()> {
+        let (mut rx, mut tx) = connection.open_bi().await?;
+        rx.write_all(b"itsame :D").await?;
+        rx.finish()?;
+        let response = tx.read_to_end(1024).await?;
+        tracing::info!("{}", String::from_utf8_lossy(&response));
+        Ok(())
     }
 }

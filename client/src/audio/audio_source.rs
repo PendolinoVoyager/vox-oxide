@@ -6,30 +6,25 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::mpsc;
-
+use tokio::sync::mpsc::Receiver;
 const SAMPLE_RATE: u32 = 48000;
 const CHANNELS: Channels = Channels::Mono;
 const FRAME_SIZE: usize = 960; // 20ms at 48kHz
+const BUF_SIZE: usize = 10; // 0.2s jitter max
 
 pub struct RTPOpusAudioSource {
-    receiver: mpsc::Receiver<RtpPacket>,
-    _stream: cpal::Stream, // keep alive
+    receiver: Receiver<RtpPacket>,
+    _stream: cpal::Stream,
 }
 
 impl RTPOpusAudioSource {
     pub fn new() -> Result<Self> {
         let host = cpal::default_host();
-        let input_devices = host.input_devices().unwrap();
-        for d in input_devices {
-            tracing::info!("{:?}", d.description());
-        }
-        tracing::info!("DEFAULT DEVICE *****************\n");
+
         let device = host
             .default_input_device()
             .expect("No input device available");
-        tracing::info!("{:?}", device.description());
-        tracing::info!("DEFAULT DEVICE *****************\n");
+        tracing::info!("Selected default audio device {:?}", device.description());
 
         let config = cpal::StreamConfig {
             channels: 1,
@@ -42,9 +37,9 @@ impl RTPOpusAudioSource {
             CHANNELS,
             Application::Voip,
         )?));
-        let (tx, rx) = mpsc::channel::<RtpPacket>(32);
-
         let pcm_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+
+        let (sender, receiver) = tokio::sync::mpsc::channel::<RtpPacket>(BUF_SIZE);
 
         let mut sequence_no = 0;
         let mut start_time = 1200;
@@ -54,7 +49,6 @@ impl RTPOpusAudioSource {
             {
                 let encoder = encoder.clone();
                 let pcm_buffer = pcm_buffer.clone();
-                let tx = tx.clone();
 
                 move |data: &[f32], _| {
                     let mut pcm = pcm_buffer.lock().unwrap();
@@ -73,7 +67,13 @@ impl RTPOpusAudioSource {
                             sequence_no += 1;
                             start_time += 160;
                             // non-blocking send (drop if channel full)
-                            let _ = tx.try_send(packet);
+                            match sender.try_send(packet) {
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed { .. }) => {
+                                    tracing::error!("e");
+                                    break;
+                                }
+                                _ => (),
+                            };
                         }
                     }
                 }
@@ -86,7 +86,7 @@ impl RTPOpusAudioSource {
         stream.play()?;
 
         Ok(Self {
-            receiver: rx,
+            receiver,
             _stream: stream,
         })
     }
