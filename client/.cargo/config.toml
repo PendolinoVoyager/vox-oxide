@@ -1,0 +1,2 @@
+[env]
+EMBEDDED_CERT_PATH = "../../dev-certs/dev-ca.pem"

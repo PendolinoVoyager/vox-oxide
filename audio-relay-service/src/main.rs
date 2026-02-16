@@ -22,23 +22,28 @@ struct Opt {
     #[clap(long = "keylog")]
     keylog: bool,
     /// TLS private key in PEM format
-    #[clap(short = 'k', long = "key", requires = "cert")]
-    key: Option<PathBuf>,
+    #[clap(
+        short = 'k',
+        long = "key",
+        requires = "cert",
+        default_value = "../dev-certs/dev-server.pem"
+    )]
+    key: PathBuf,
     /// TLS certificate in PEM format
-    #[clap(short = 'c', long = "cert", requires = "key")]
-    cert: Option<PathBuf>,
-    /// Enable stateless retries
-    #[clap(long = "stateless-retry")]
-    stateless_retry: bool,
+    #[clap(
+        short = 'c',
+        long = "cert",
+        requires = "key",
+        default_value = "../dev-certs/dev-server.key"
+    )]
+    cert: PathBuf,
+
     /// Address to listen on
     #[clap(long = "listen", default_value = "[::1]:4433")]
     listen: SocketAddr,
-    /// Client address to block
-    #[clap(long = "block")]
-    block: Option<SocketAddr>,
     /// Maximum number of concurrent connections to allow
-    #[clap(long = "connection-limit")]
-    connection_limit: Option<usize>,
+    #[clap(long = "connection-limit", default_value = "50")]
+    connection_limit: usize,
 }
 
 fn main() {
@@ -63,55 +68,28 @@ fn main() {
 
 #[tokio::main]
 async fn run(options: Opt) -> Result<()> {
-    let (certs, key) = if let (Some(key_path), Some(cert_path)) = (&options.key, &options.cert) {
-        let key = if key_path.extension().is_some_and(|x| x == "der") {
+    let (certs, key) = {
+        let key = if options.key.extension().is_some_and(|x| x == "der") {
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-                fs::read(key_path).context("failed to read private key file")?,
+                fs::read(options.key).context("failed to read private key file")?,
             ))
         } else {
-            PrivateKeyDer::from_pem_file(key_path)
+            PrivateKeyDer::from_pem_file(options.key)
                 .context("failed to read PEM from private key file")?
         };
 
-        let cert_chain = if cert_path.extension().is_some_and(|x| x == "der") {
+        let cert_chain = if options.cert.extension().is_some_and(|x| x == "der") {
             vec![CertificateDer::from(
-                fs::read(cert_path).context("failed to read certificate chain file")?,
+                fs::read(options.cert).context("failed to read certificate chain file")?,
             )]
         } else {
-            CertificateDer::pem_file_iter(cert_path)
+            CertificateDer::pem_file_iter(options.cert)
                 .context("failed to read PEM from certificate chain file")?
                 .collect::<Result<_, _>>()
                 .context("invalid PEM-encoded certificate")?
         };
 
         (cert_chain, key)
-    } else {
-        let dirs = directories_next::ProjectDirs::from("org", "quinn", "quinn-examples").unwrap();
-        let path = dirs.data_local_dir();
-        let cert_path = path.join("cert.der");
-        let key_path = path.join("key.der");
-        let (cert, key) = match fs::read(&cert_path).and_then(|x| Ok((x, fs::read(&key_path)?))) {
-            Ok((cert, key)) => (
-                CertificateDer::from(cert),
-                PrivateKeyDer::try_from(key).map_err(anyhow::Error::msg)?,
-            ),
-            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                info!("generating self-signed certificate");
-                let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-                let key = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-                let cert = cert.cert.into();
-                fs::create_dir_all(path).context("failed to create certificate directory")?;
-                fs::write(&cert_path, &cert).context("failed to write certificate")?;
-                fs::write(&key_path, key.secret_pkcs8_der())
-                    .context("failed to write private key")?;
-                (cert, key.into())
-            }
-            Err(e) => {
-                bail!("failed to read certificate: {}", e);
-            }
-        };
-
-        (vec![cert], key)
     };
 
     let mut server_crypto = rustls::ServerConfig::builder()
@@ -133,16 +111,10 @@ async fn run(options: Opt) -> Result<()> {
     eprintln!("listening on {}", endpoint.local_addr()?);
 
     while let Some(conn) = endpoint.accept().await {
-        if options
-            .connection_limit
-            .is_some_and(|n| endpoint.open_connections() >= n)
-        {
+        if endpoint.open_connections() >= options.connection_limit {
             info!("refusing due to open connection limit");
             conn.refuse();
-        } else if Some(conn.remote_address()) == options.block {
-            info!("refusing blocked client IP address");
-            conn.refuse();
-        } else if options.stateless_retry && !conn.remote_address_validated() {
+        } else if !conn.remote_address_validated() {
             info!("requiring connection to validate its address");
             conn.retry().unwrap();
         } else {
