@@ -1,0 +1,20 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[target.release]
+opt-level = "s"
+
+[dependencies]
+anyhow = "1.0.101"
+bytes = "1.11.1"
+clap = { version = "4.5.58", features = ["derive", "env"] }
+directories-next = "2.0.0"
+quinn = "0.11.9"
+quinn-proto = { version = "0.11.13", features = ["aws-lc-rs"] }
+rustls = { version = "0.23.36", features = ["aws-lc-rs"] }
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+url = "2.5.8"
