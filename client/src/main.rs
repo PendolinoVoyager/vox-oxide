@@ -2,65 +2,46 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::time::Duration;
 mod app_config;
 mod client_config;
-
 use anyhow::{Result, anyhow};
-use bytes::Bytes;
 use clap::Parser;
 use rustls::crypto;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{Layer, fmt, layer::SubscriberExt};
 
-use crate::{app_config::AppConfig, client_config::create_client_config};
+use crate::{app::App, audio::audio_manager};
+const LOG_FILE: &str = "logs.txt";
 
-fn main() {
-    crypto::CryptoProvider::install_default(crypto::aws_lc_rs::default_provider()).unwrap();
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::FmtSubscriber::builder()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .finish(),
-    )
-    .unwrap();
-    let opt = app_config::AppConfig::parse();
-    let code = {
-        if let Err(e) = run(opt) {
-            eprintln!("ERROR: {e}");
-            1
-        } else {
-            0
-        }
-    };
-    ::std::process::exit(code);
-}
+mod app;
+mod audio;
 
 #[tokio::main]
-async fn run(options: AppConfig) -> Result<()> {
-    let client_config = create_client_config(&options)?;
-    let mut endpoint = quinn::Endpoint::client(options.bind)?;
-    endpoint.set_default_client_config(client_config);
+async fn main() -> Result<()> {
+    crypto::CryptoProvider::install_default(crypto::aws_lc_rs::default_provider()).unwrap();
+    let subscriber = tracing_subscriber::Registry::default().with(
+        // stdout layer, to view everything in the console
+        fmt::layer()
+            .compact()
+            .with_writer(|| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .append(true)
+                    .open(LOG_FILE)
+                    .unwrap()
+            })
+            .with_ansi(false)
+            .with_filter(LevelFilter::from_level(tracing::Level::INFO)),
+    );
+    tracing::subscriber::set_global_default(subscriber)?;
 
-    let host = options.get_host()?;
-    let remote = options.get_remote_addr()?;
+    tracing::info!("App starting up...");
 
-    tracing::debug!("connecting to {host} at {remote}");
-    let conn = endpoint
-        .connect(remote, &host)?
-        .await
-        .map_err(|e| anyhow!("failed to connect: {}", e))?;
-
-    loop {
-        let res = conn.send_datagram(Bytes::copy_from_slice(b"Wowzer :D"));
-        if let Err(e) = res {
-            eprintln!("Error: {:?}", e);
-        } else {
-            println!("Sent a dgram");
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    conn.close(0u32.into(), b"done");
-
-    // Give the server a fair chance to receive the close packet
-    endpoint.wait_idle().await;
-
+    let opt = app_config::AppConfig::parse();
+    color_eyre::install().map_err(|e| anyhow!(e))?;
+    let audio_manager = audio_manager::AudioManager::new(opt.clone());
+    let mut app = App::new(audio_manager, opt);
+    ratatui::run(|terminal| app.run(terminal))?;
     Ok(())
 }

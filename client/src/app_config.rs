@@ -7,7 +7,7 @@ use std::{
 use clap::Parser;
 
 /// HTTP/0.9 over QUIC client
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
 pub struct AppConfig {
     #[clap(long = "url", default_value = "quic://[::1]:4433")]
@@ -18,7 +18,7 @@ pub struct AppConfig {
     pub host: Option<String>,
 
     /// Certificate path
-    #[clap(long = "pem")]
+    #[clap(long = "pem", default_value = "../dev-certs/dev-ca.pem")]
     pub cert_path: Option<PathBuf>,
 
     /// Address to bind on

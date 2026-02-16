@@ -1,23 +1,38 @@
 [package]
 name = "client"
 version = "0.1.0"
+description = "A TUI communicator app."
+authors = ["Klaudia Petryk <klaudia.kp21@gmail.com>"]
+license = "MIT"
 edition = "2024"
 
 
-[target.release]
+# Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
+[profile.release]
+codegen-units = 1
+lto = true
 opt-level = "s"
-
+strip = true
 
 [dependencies]
 anyhow = "1.0.101"
 bytes = "1.11.1"
 clap = { version = "4.5.58", features = ["derive", "env"] }
+color-eyre = "0.6.5"
+cpal = "0.17.1"
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 directories-next = "2.0.0"
+opus = "0.3.1"
 quinn = "0.11.9"
 quinn-proto = { version = "0.11.13", features = ["aws-lc-rs"] }
+rand = "0.10.0"
+ratatui = "0.30.0"
+ringbuf = "0.4.8"
 rodio = "0.21.1"
 rustls = { version = "0.23.36", features = ["aws-lc-rs"] }
+rvoip-rtp-core = "0.1.26"
 tokio = { version = "1.49.0", features = ["full"] }
+tokio-util = "0.7.18"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.22", features = ["json"] }
 url = "2.5.8"

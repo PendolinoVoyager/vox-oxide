@@ -2,16 +2,26 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{fs, io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    io::{self, Read},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use hound::WavSpec;
 use quinn_proto::crypto::rustls::QuicServerConfig;
 use rustls::{
     crypto::{self},
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject},
 };
+use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
+use tracing_subscriber::fmt::format;
 
 mod common;
 
@@ -105,7 +115,7 @@ async fn run(options: Opt) -> Result<()> {
         quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_crypto)?));
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
-    transport_config.datagram_receive_buffer_size(Some(2000));
+    transport_config.datagram_receive_buffer_size(Some(1024 * 50));
 
     let endpoint = quinn::Endpoint::server(server_config, options.listen)?;
     eprintln!("listening on {}", endpoint.local_addr()?);
@@ -136,21 +146,41 @@ async fn handle_connection(conn: quinn::Incoming) -> Result<()> {
 
     info!("established");
 
+    playback_loop(connection).await
+}
+
+async fn playback_loop(connection: quinn::Connection) -> anyhow::Result<()> {
+    let mut decoder = opus::Decoder::new(48000, opus::Channels::Mono)?;
+    let mut pcm_buf = vec![0i16; 960]; // 20ms @ 48kHz
+
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 48000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut wav_writer =
+        hound::WavWriter::create(format!("test{}.wav", connection.stable_id()), spec)?;
+    // Main receive loop - write Opus packets to FFmpeg stdin
     loop {
         let read_res = connection.read_datagram().await;
-        let _bytes = match read_res {
+        let bytes = match read_res {
             Err(quinn::ConnectionError::ApplicationClosed(frame)) => {
                 tracing::info!("connection closed: {}", frame);
                 return Ok(());
             }
-            Err(e) => {
-                return Err(e.into());
-            }
-            Ok(dgram) => {
-                tracing::info!("Received: {:?}", String::from_utf8_lossy(&dgram[..]));
-                dgram
-            }
+            Err(e) => return Err(e.into()),
+            Ok(dgram) => dgram,
         };
-        info!("Doing something with bytes here");
+        let rtp_packet = rvoip_rtp_core::RtpPacket::parse(&bytes)?;
+        tracing::info!(
+            "Packet {} from {}",
+            rtp_packet.header.sequence_number,
+            rtp_packet.header.ssrc
+        );
+        let len = decoder.decode(&rtp_packet.payload, &mut pcm_buf, false)?;
+        for sample in &pcm_buf[0..len] {
+            wav_writer.write_sample(*sample)?;
+        }
     }
 }
