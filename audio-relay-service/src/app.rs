@@ -1,10 +1,14 @@
 use crate::app_config::AppConfig;
+use std::time::{Duration, Instant};
 use std::{fs, sync::Arc};
 
 use anyhow::{Context, Result};
+use cpal::FromSample;
+use ffmpeg_next::format::{Input, open};
 use quinn::Endpoint;
 use quinn_proto::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject};
+use rvoip_rtp_core::RtpPacket;
 use tokio::signal::{self};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -172,26 +176,48 @@ async fn playback_loop(connection: &mut quinn::Connection) -> anyhow::Result<()>
     };
     let mut wav_writer =
         hound::WavWriter::create(format!("test{}.wav", connection.stable_id()), spec)?;
-    // Main receive loop - write Opus packets to FFmpeg stdin
+
+    let sample_rate = 48_000.0;
+    let frequency = 480.0;
+    let amplitude = 0.3; // 0.0–1.0 (keep <= 1.0 to avoid clipping)
+
+    let mut phase = 0.0f32;
+    let phase_inc = 0.8 * std::f32::consts::PI * frequency / sample_rate;
+
+    let mut interval = tokio::time::interval(Duration::from_millis(20));
+    let mut last_write_time = Instant::now();
     loop {
-        let read_res = connection.read_datagram().await;
-        let bytes = match read_res {
-            Err(quinn::ConnectionError::ApplicationClosed(frame)) => {
-                tracing::info!("connection closed: {}", frame);
-                return Ok(());
+        tokio::select! {
+        read_res = connection.read_datagram() => {
+            let bytes = match read_res {
+                Err(quinn::ConnectionError::ApplicationClosed(frame)) => {
+                    tracing::info!("connection closed: {}", frame);
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+                Ok(dgram) => dgram,
+            };
+            let rtp_packet = rvoip_rtp_core::RtpPacket::parse(&bytes)?;
+            tracing::trace!(
+                "Packet {} from {}",
+                rtp_packet.header.sequence_number,
+                rtp_packet.header.ssrc
+            );
+            last_write_time = Instant::now();
+
+            let len = decoder.decode(&rtp_packet.payload, &mut pcm_buf, false)?;
+            for sample in pcm_buf[0..len].iter_mut() {
+                wav_writer.write_sample(*sample)?;
             }
-            Err(e) => return Err(e.into()),
-            Ok(dgram) => dgram,
-        };
-        let rtp_packet = rvoip_rtp_core::RtpPacket::parse(&bytes)?;
-        tracing::debug!(
-            "Packet {} from {}",
-            rtp_packet.header.sequence_number,
-            rtp_packet.header.ssrc
-        );
-        let len = decoder.decode(&rtp_packet.payload, &mut pcm_buf, false)?;
-        for sample in &pcm_buf[0..len] {
-            wav_writer.write_sample(*sample)?;
+
+        }
+        _ = interval.tick() => {
+            let silence_duration = last_write_time.elapsed();
+            for _ in 0..(silence_duration.as_millis() * (sample_rate as u128 / 1000)) {
+                wav_writer.write_sample(0)?
+            }
+            last_write_time = Instant::now();
+        }
         }
     }
 }

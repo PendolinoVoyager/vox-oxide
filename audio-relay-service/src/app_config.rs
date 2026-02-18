@@ -61,9 +61,12 @@ pub struct AppConfig {
     /// Maximum number of concurrent connections to allow
     #[clap(long = "connection-limit")]
     pub connection_limit: usize,
-
+    /// Log level as per tracing convention trace < debug < info < warn < error
     #[clap(short, long)]
     pub log_level: String,
+
+    #[clap(long)]
+    pub log_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ClapSerdeOptionalAppConfig {
@@ -88,6 +91,7 @@ impl Clone for ClapSerdeOptionalAppConfig {
             listen: self.listen.clone(),
             connection_limit: self.connection_limit.clone(),
             log_level: self.log_level.clone(),
+            log_file: self.log_file.clone(),
         }
     }
 }

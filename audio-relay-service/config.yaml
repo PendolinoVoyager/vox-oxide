@@ -3,4 +3,4 @@ key: ../dev-certs/dev-server.key
 cert: ../dev-certs/dev-server.pem
 listen: "[::1]:4433"
 connection_limit: 50
-log_level: debug
+log_level: info

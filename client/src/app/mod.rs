@@ -59,6 +59,10 @@ impl App {
             KeyCode::Right => self.counter += 1,
             KeyCode::Char('c') => self.audio_manager.join_room(10),
             KeyCode::Char('v') => self.audio_manager.exit_room(),
+            KeyCode::Char('m') => self
+                .audio_manager
+                .set_muted(!self.audio_manager.get_muted()),
+
             _ => {}
         }
     }
@@ -85,9 +89,14 @@ impl Widget for &App {
                 if self.audio_manager.active() && !self.audio_manager.is_errored() {
                     "Now recording audio..."
                 } else {
-                    "Audio recording stopped"
+                    "Audio recording stopped: "
                 },
             ),
+            Line::from(if self.audio_manager.get_muted() {
+                "Press M to unmute"
+            } else {
+                "Press M to mute self"
+            }),
         ]);
         Paragraph::new(counter_text)
             .centered()

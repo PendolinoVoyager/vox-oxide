@@ -3,7 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use opus::{Application, Channels, Encoder};
 use rvoip_rtp_core::{RtpHeader, RtpPacket, RtpSequenceNumber};
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::Duration,
 };
 use tokio::sync::mpsc::Receiver;
@@ -15,10 +15,11 @@ const BUF_SIZE: usize = 10; // 0.2s jitter max
 pub struct RTPOpusAudioSource {
     receiver: Receiver<RtpPacket>,
     _stream: cpal::Stream,
+    playing: Arc<AtomicBool>,
 }
 
 impl RTPOpusAudioSource {
-    pub fn new() -> Result<Self> {
+    pub fn new(play_on_start: bool) -> Result<Self> {
         let host = cpal::default_host();
 
         let device = host
@@ -31,31 +32,36 @@ impl RTPOpusAudioSource {
             sample_rate: SAMPLE_RATE,
             buffer_size: cpal::BufferSize::Default,
         };
-
+        let playing = Arc::new(AtomicBool::new(play_on_start));
         let encoder = Arc::new(Mutex::new(Encoder::new(
             SAMPLE_RATE,
             CHANNELS,
             Application::Voip,
         )?));
-        let pcm_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
 
         let (sender, receiver) = tokio::sync::mpsc::channel::<RtpPacket>(BUF_SIZE);
 
+        let mut pcm_buffer = Vec::<f32>::new();
         let mut sequence_no = 0;
         let mut start_time = 1200;
         let ssrc = rand::random_range(0..u32::MAX / 2);
         let stream = device.build_input_stream(
             &config,
             {
+                let playing = Arc::clone(&playing);
                 let encoder = encoder.clone();
-                let pcm_buffer = pcm_buffer.clone();
 
                 move |data: &[f32], _| {
-                    let mut pcm = pcm_buffer.lock().unwrap();
-                    pcm.extend_from_slice(data);
+                    // it's ok reaaaallyyyy...
+                    // The data will be produced in the background, but so what?
+                    if !playing.load(std::sync::atomic::Ordering::Relaxed) {
+                        pcm_buffer.clear();
+                        return;
+                    }
+                    pcm_buffer.extend_from_slice(data);
 
-                    while pcm.len() >= FRAME_SIZE {
-                        let frame: Vec<f32> = pcm.drain(..FRAME_SIZE).collect();
+                    while pcm_buffer.len() >= FRAME_SIZE {
+                        let frame: Vec<f32> = pcm_buffer.drain(..FRAME_SIZE).collect();
 
                         let mut output = vec![0u8; 4000];
                         let mut encoder = encoder.lock().unwrap();
@@ -88,12 +94,17 @@ impl RTPOpusAudioSource {
         Ok(Self {
             receiver,
             _stream: stream,
+            playing,
         })
     }
 
     /// Async read of next Opus packet
     pub async fn read(&mut self) -> Option<RtpPacket> {
         self.receiver.recv().await
+    }
+    pub async fn set_playing(&mut self, playing: bool) {
+        self.playing
+            .store(playing, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
