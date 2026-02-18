@@ -1,0 +1,4 @@
+- Make PMC mixer struct, just mix all by passing a vec of vecs
+- RTPMixer might time with an internal clock - when all streams produce or 20ms pass - get all opus data and decode it, then mix it.
+- RTPMixer will automatically configure itself based on unique ssrc's and remove the stream if it's inactive for N secs. Also manually remove stream is possible.
+- Record a .wav and decode it in a loop, sending it to a RTPMixer 

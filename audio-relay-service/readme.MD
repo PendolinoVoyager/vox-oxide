@@ -1,3 +1,17 @@
+# Audio Relay Service
+
+env ARS_CONFIG_PATH - specify a path to config file, for container use mainly 
+
+
+
+
+
+
+
+
+
+
+
 Ideas:
 
 QUIC for transport

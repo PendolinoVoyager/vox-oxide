@@ -1,0 +1,6 @@
+environment: development
+key: "key.pem"
+cert: "cert.pem"
+listen: "[::1]:5555"
+connection_limit: 100
+log_level: "info"

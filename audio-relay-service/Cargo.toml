@@ -6,7 +6,9 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.101"
 clap = { version = "4.5.58", features = ["derive"] }
+clap-serde-derive = "0.2.1"
 cpal = "0.17.1"
+derive_more = { version = "2.1.1", features = ["from_str"] }
 directories-next = "2.0.0"
 ffmpeg-next = "8.0.0"
 hound = "3.5.1"
@@ -17,7 +19,11 @@ rcgen = { version = "0.14.7", features = ["aws_lc_rs"] }
 rodio = "0.21.1"
 rustls = "0.23.36"
 rvoip-rtp-core = "0.1.26"
+serde = "1.0.228"
+serde_yaml = "0.9.34"
+tempfile = "3.25.0"
 tokio = { version = "1.49.0", features = ["full", "tracing"] }
+tokio-util = { version = "0.7.18", features = ["full"] }
 tracing = "0.1.44"
 tracing-futures = { version = "0.2.5", features = ["tokio"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

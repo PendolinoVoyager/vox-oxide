@@ -1,0 +1,4 @@
+environment: production
+key: "key.pem"
+# cert missing
+connection_limit: 10
