@@ -1,6 +1,8 @@
 use std::env;
 
-use audio_relay_service::app_config::{AppConfig, AppConfigArgs, CONFIG_PATH_ENV, Environment};
+use audio_relay_service::common::app_config::{
+    AppConfig, AppConfigArgs, CONFIG_PATH_ENV, Environment,
+};
 
 use clap::Parser;
 

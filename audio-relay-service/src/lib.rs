@@ -1,3 +1,4 @@
 /// Crate re-exports (mainly for test purposes)
 pub mod app;
-pub mod app_config;
+pub mod common;
+pub mod vc;

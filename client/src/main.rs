@@ -11,7 +11,6 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{Layer, fmt, layer::SubscriberExt};
 
 use crate::{app::App, audio::audio_manager};
-const LOG_FILE: &str = "logs.txt";
 
 mod app;
 mod audio;
@@ -19,18 +18,18 @@ mod audio;
 #[tokio::main]
 async fn main() -> Result<()> {
     crypto::CryptoProvider::install_default(crypto::aws_lc_rs::default_provider()).unwrap();
+    let opt = app_config::AppConfig::parse();
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(&opt.log_file)?;
+
     let subscriber = tracing_subscriber::Registry::default().with(
         // stdout layer, to view everything in the console
         fmt::layer()
             .compact()
-            .with_writer(|| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .append(true)
-                    .open(LOG_FILE)
-                    .unwrap()
-            })
+            .with_writer(log_file)
             .with_ansi(false)
             .with_filter(LevelFilter::from_level(tracing::Level::INFO)),
     );
@@ -38,7 +37,6 @@ async fn main() -> Result<()> {
 
     tracing::info!("App starting up...");
 
-    let opt = app_config::AppConfig::parse();
     color_eyre::install().map_err(|e| anyhow!(e))?;
     let audio_manager = audio_manager::AudioManager::new(opt.clone());
     let mut app = App::new(audio_manager, opt);

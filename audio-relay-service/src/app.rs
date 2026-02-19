@@ -1,14 +1,6 @@
-use crate::app_config::AppConfig;
-use std::time::{Duration, Instant};
-use std::{fs, sync::Arc};
+use crate::common::app_config::AppConfig;
 
-use anyhow::{Context, Result};
-use cpal::FromSample;
-use ffmpeg_next::format::{Input, open};
 use quinn::Endpoint;
-use quinn_proto::crypto::rustls::QuicServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject};
-use rvoip_rtp_core::RtpPacket;
 use tokio::signal::{self};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -43,6 +35,7 @@ impl App {
     }
     async fn main_loop(&'static self, endpoint: Endpoint) {
         let connection_limit = self.config.connection_limit;
+
         loop {
             tokio::select! {
                             Some(conn) = endpoint.accept() => {
@@ -54,7 +47,7 @@ impl App {
                                     conn.retry().unwrap();
                                 } else {
                                     tracing::info!("Accepted connection");
-                                    let fut = handle_connection(self, conn);
+                                    let fut = crate::vc::handle_connection(self, conn);
                                     self.task_tracker.spawn(async move {
                                         if let Err(e) = fut.await {
                                             tracing::error!("connection failed: {reason}", reason = e.to_string())
@@ -74,43 +67,13 @@ impl App {
     }
     fn create_endpoint(&'static self) -> anyhow::Result<Endpoint> {
         let options = self.config.clone();
-        let (certs, key) = {
-            let key = if options.key.extension().is_some_and(|x| x == "der") {
-                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-                    fs::read(options.key).context("failed to read private key file")?,
-                ))
-            } else {
-                PrivateKeyDer::from_pem_file(options.key)
-                    .context("failed to read PEM from private key file")?
-            };
+        let (certs, key) = crate::common::security::certs::load_certs(&self.config)?;
+        let server_config = crate::common::security::endpoint_config::create_server_config(
+            &self.config,
+            certs,
+            key,
+        )?;
 
-            let cert_chain = if options.cert.extension().is_some_and(|x| x == "der") {
-                vec![CertificateDer::from(
-                    fs::read(options.cert).context("failed to read certificate chain file")?,
-                )]
-            } else {
-                CertificateDer::pem_file_iter(options.cert)
-                    .context("failed to read PEM from certificate chain file")?
-                    .collect::<Result<_, _>>()
-                    .context("invalid PEM-encoded certificate")?
-            };
-
-            (cert_chain, key)
-        };
-
-        let mut server_crypto = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-        server_crypto.alpn_protocols = vec![b"hq-29".to_vec()];
-
-        let mut server_config =
-            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_crypto)?));
-        let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-        transport_config.max_concurrent_uni_streams(0_u8.into());
-        // streams for auth...
-        transport_config.max_concurrent_bidi_streams(5_u8.into());
-        transport_config.datagram_receive_buffer_size(Some(1024 * 50));
-        transport_config.stream_receive_window(1024_u32.into());
         Ok(quinn::Endpoint::server(server_config, options.listen)?)
     }
 
@@ -124,100 +87,6 @@ impl App {
             Err(e) => {
                 tracing::error!("Cannot listen for interrupt, app closing: {e}");
             }
-        }
-    }
-}
-
-async fn handle_connection(app: &'static App, conn: quinn::Incoming) -> Result<()> {
-    let mut connection = conn.await?;
-    // Accept first bidirectional stream (control)
-    let (mut send, mut recv) = connection.accept_bi().await?;
-
-    let request = recv.read_to_end(4096).await?;
-    tracing::debug!(
-        "Auth payload from {}: {:?}",
-        connection.remote_address(),
-        String::from_utf8_lossy(&request)
-    );
-
-    let valid = true; // logic here
-
-    if !valid {
-        connection.close(0u32.into(), b"auth failed");
-        return Err(anyhow::anyhow!("auth failed"));
-    }
-
-    // Send OK
-    send.write_all(b"OK").await.unwrap();
-    send.finish().unwrap();
-    tracing::info!("established");
-
-    tokio::select! {
-        _ = playback_loop(&mut connection) => {
-            Ok(())
-        }
-        _ = app.cancellation_token.cancelled() => {
-            tracing::debug!("Shutting down connection with {}", connection.remote_address());
-            connection.close(1u32.into(), b"server shutdown");
-            Ok(())
-        }
-    }
-}
-
-async fn playback_loop(connection: &mut quinn::Connection) -> anyhow::Result<()> {
-    let mut decoder = opus::Decoder::new(48000, opus::Channels::Mono)?;
-    let mut pcm_buf = vec![0i16; 960]; // 20ms @ 48kHz
-
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: 48000,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut wav_writer =
-        hound::WavWriter::create(format!("test{}.wav", connection.stable_id()), spec)?;
-
-    let sample_rate = 48_000.0;
-    let frequency = 480.0;
-    let amplitude = 0.3; // 0.0–1.0 (keep <= 1.0 to avoid clipping)
-
-    let mut phase = 0.0f32;
-    let phase_inc = 0.8 * std::f32::consts::PI * frequency / sample_rate;
-
-    let mut interval = tokio::time::interval(Duration::from_millis(20));
-    let mut last_write_time = Instant::now();
-    loop {
-        tokio::select! {
-        read_res = connection.read_datagram() => {
-            let bytes = match read_res {
-                Err(quinn::ConnectionError::ApplicationClosed(frame)) => {
-                    tracing::info!("connection closed: {}", frame);
-                    return Ok(());
-                }
-                Err(e) => return Err(e.into()),
-                Ok(dgram) => dgram,
-            };
-            let rtp_packet = rvoip_rtp_core::RtpPacket::parse(&bytes)?;
-            tracing::trace!(
-                "Packet {} from {}",
-                rtp_packet.header.sequence_number,
-                rtp_packet.header.ssrc
-            );
-            last_write_time = Instant::now();
-
-            let len = decoder.decode(&rtp_packet.payload, &mut pcm_buf, false)?;
-            for sample in pcm_buf[0..len].iter_mut() {
-                wav_writer.write_sample(*sample)?;
-            }
-
-        }
-        _ = interval.tick() => {
-            let silence_duration = last_write_time.elapsed();
-            for _ in 0..(silence_duration.as_millis() * (sample_rate as u128 / 1000)) {
-                wav_writer.write_sample(0)?
-            }
-            last_write_time = Instant::now();
-        }
         }
     }
 }

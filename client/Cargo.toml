@@ -15,6 +15,9 @@ opt-level = "s"
 strip = true
 
 [dependencies]
+lib-common-voxoxide = { path = "../lib/lib-common-voxoxide", features = [
+    "serde",
+] }
 anyhow = "1.0.101"
 bytes = "1.11.1"
 clap = { version = "4.5.58", features = ["derive", "env"] }
@@ -35,3 +38,4 @@ tokio-util = "0.7.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["json"] }
 url = "2.5.8"
+serde_json = "1.0.149"

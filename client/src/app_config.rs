@@ -24,6 +24,8 @@ pub struct AppConfig {
     /// Address to bind on
     #[clap(long = "bind", default_value = "[::]:0")]
     pub bind: SocketAddr,
+    #[clap(long = "log-file", short, default_value = "/dev/null")]
+    pub log_file: PathBuf,
 }
 
 impl AppConfig {
