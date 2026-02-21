@@ -5,7 +5,7 @@ use crate::app::App;
 pub async fn auth_user_for_session(
     _app: &'static App,
     connection: &mut quinn::Connection,
-) -> Result<(), ArsAuthError> {
+) -> Result<ArsAuthRequest, ArsAuthError> {
     // Accept first bidirectional stream (control)
     let (mut send, mut recv) = connection
         .accept_bi()
@@ -29,5 +29,5 @@ pub async fn auth_user_for_session(
 
     send.write_all(b"OK").await.unwrap();
     send.finish().unwrap();
-    Ok(())
+    Ok(auth_request)
 }

@@ -1,9 +1,9 @@
+pub mod audio_filter;
 pub mod audio_manager;
 pub mod audio_source;
+use crate::{app_config::AppConfig, client_config::create_client_config};
 use anyhow::{Result, anyhow};
 use quinn::Connection;
-
-use crate::{app_config::AppConfig, client_config::create_client_config};
 pub async fn create_audio_connection(options: AppConfig) -> Result<Connection> {
     let client_config = create_client_config(&options)?;
     let mut endpoint = quinn::Endpoint::client(options.bind)?;

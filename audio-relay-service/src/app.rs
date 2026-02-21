@@ -1,4 +1,5 @@
 use crate::common::app_config::AppConfig;
+use crate::vc::group_voice_session::GroupVoiceSession;
 
 use quinn::Endpoint;
 use tokio::signal::{self};
@@ -11,6 +12,8 @@ pub struct App {
     pub cancellation_token: CancellationToken,
     /// Task tracker. Instead of using tokio::spawn use tracker.spawn
     task_tracker: TaskTracker,
+    /// One debug session
+    pub session_store: GroupVoiceSession,
 }
 
 impl App {
@@ -18,6 +21,7 @@ impl App {
         let cancellation_token = CancellationToken::new();
         let task_tracker = TaskTracker::new();
         let app = Box::new(Self {
+            session_store: GroupVoiceSession::new(),
             config,
             cancellation_token,
             task_tracker,
@@ -29,13 +33,16 @@ impl App {
         tracing::info!("listening on {}", endpoint.local_addr()?);
         tokio::spawn(self.main_loop(endpoint));
         self.handle_signal().await;
+        // after shutdown signal no new tasks will be spawned
         self.task_tracker.close();
         self.task_tracker.wait().await;
         Ok(())
     }
     async fn main_loop(&'static self, endpoint: Endpoint) {
         let connection_limit = self.config.connection_limit;
-
+        self.task_tracker.spawn(async {
+            self.session_store.run(self).await;
+        });
         loop {
             tokio::select! {
                             Some(conn) = endpoint.accept() => {

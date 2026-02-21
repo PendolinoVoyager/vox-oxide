@@ -10,11 +10,11 @@ pub enum AuthErrorSerde {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArsAuthRequestSerde {
-    placeholder_id: u32,
+    pub room_id: u32,
 }
 
 impl ArsAuthRequestSerde {
     pub fn new() -> Self {
-        Self { placeholder_id: 10 }
+        Self { room_id: 10 }
     }
 }

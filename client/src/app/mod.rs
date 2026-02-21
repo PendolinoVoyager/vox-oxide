@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     app_config::AppConfig,
     audio::audio_manager::{self, AudioManager},
@@ -11,11 +13,13 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 use ratatui::{prelude::*, widgets::Block};
+use serde_json::Value;
 
 #[derive(Debug)]
 pub struct App {
     audio_manager: audio_manager::AudioManager,
     config: AppConfig,
+    meta: HashMap<Value, Value>,
     exit: bool,
     pub counter: i32,
 }
@@ -26,6 +30,7 @@ impl App {
             config,
             exit: false,
             counter: 0,
+            meta: HashMap::new(),
         }
     }
     /// runs the application's main loop until the user quits
@@ -83,15 +88,12 @@ impl Widget for &App {
             .title_bottom(instructions.centered())
             .border_set(border::THICK);
 
+        let msg =
+            serde_json::to_string(&self.audio_manager.get_state()).unwrap_or("Unknown".to_owned());
+        let msg: String = format!("Connection state: {msg}").into();
         let counter_text = Text::from(vec![
             Line::from(vec!["Value: ".into(), self.counter.to_string().yellow()]),
-            Line::from(
-                if self.audio_manager.get_active() && !self.audio_manager.is_errored() {
-                    "Now recording audio..."
-                } else {
-                    "Audio recording stopped: "
-                },
-            ),
+            Line::from(msg),
             Line::from(if self.audio_manager.get_muted() {
                 "Press M to unmute"
             } else {

@@ -1,5 +1,5 @@
 [package]
-name = "client"
+name = "vox-oxide"
 version = "0.1.0"
 description = "A TUI communicator app."
 authors = ["Klaudia Petryk <klaudia.kp21@gmail.com>"]
@@ -13,6 +13,9 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[build-dependencies]
+winres = "0.1"
 
 [dependencies]
 lib-common-voxoxide = { path = "../lib/lib-common-voxoxide", features = [
@@ -39,3 +42,4 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["json"] }
 url = "2.5.8"
 serde_json = "1.0.149"
+serde = "1.0.228"
