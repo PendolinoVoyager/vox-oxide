@@ -5,7 +5,8 @@ description = "A TUI communicator app."
 authors = ["Klaudia Petryk <klaudia.kp21@gmail.com>"]
 license = "MIT"
 edition = "2024"
-
+[features]
+audio-integration-tests = []
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]
@@ -39,7 +40,8 @@ rvoip-rtp-core = "0.1.26"
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-util = "0.7.18"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["json"] }
+tracing-subscriber = { version = "0.3.22", features = ["json", "env-filter"] }
 url = "2.5.8"
 serde_json = "1.0.149"
 serde = "1.0.228"
+num-traits = "0.2.19"

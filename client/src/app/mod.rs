@@ -19,6 +19,7 @@ use serde_json::Value;
 pub struct App {
     audio_manager: audio_manager::AudioManager,
     config: AppConfig,
+
     meta: HashMap<Value, Value>,
     exit: bool,
     pub counter: i32,
@@ -62,7 +63,9 @@ impl App {
             KeyCode::Char('q') => self.exit = true,
             KeyCode::Left => self.counter -= 1,
             KeyCode::Right => self.counter += 1,
-            KeyCode::Char('c') => self.audio_manager.join_room(10),
+            KeyCode::Char('c') => {
+                let _ = self.audio_manager.join_room(10);
+            }
             KeyCode::Char('v') => self.audio_manager.exit_room(),
             KeyCode::Char('m') => self
                 .audio_manager

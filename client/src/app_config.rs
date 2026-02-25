@@ -1,8 +1,4 @@
-use anyhow::anyhow;
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    path::PathBuf,
-};
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 
@@ -10,8 +6,8 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[clap(name = "client")]
 pub struct AppConfig {
-    #[clap(long = "url", default_value = "quic://[::1]:4433")]
-    pub url: url::Url,
+    #[clap(long = "remote", default_value = "[::1]:4433")]
+    pub audio_service_address: SocketAddr,
 
     /// Override hostname used for certificate verification
     #[clap(long = "host")]
@@ -24,23 +20,21 @@ pub struct AppConfig {
     /// Address to bind on
     #[clap(long = "bind", default_value = "[::]:0")]
     pub bind: SocketAddr,
-    #[clap(long = "log-file", short, default_value = "/dev/null")]
+    /// Log file to write to. Default points to /dev/null or $null on Windows
+    #[clap(long = "log-file", short, default_value = if cfg!(target_family="windows") {r"c:\nul"} else {r"/dev/null"})]
     pub log_file: PathBuf,
+    #[clap(long, default_value = "info")]
+    pub log_level: String,
 }
 
 impl AppConfig {
     pub fn get_host(&self) -> anyhow::Result<String> {
-        let url_host = strip_ipv6_brackets(self.url.host_str().unwrap());
+        let url_host = strip_ipv6_brackets(&self.audio_service_address.ip().to_string()).to_owned();
 
-        Ok(self.host.as_deref().unwrap_or(url_host).to_owned())
+        Ok(self.host.as_deref().unwrap_or(&url_host).to_owned())
     }
-    pub fn get_remote_addr(&self) -> anyhow::Result<SocketAddr> {
-        let url_host = strip_ipv6_brackets(self.url.host_str().unwrap());
-
-        (url_host, self.url.port().unwrap_or(4433))
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| anyhow!("couldn't resolve to an address"))
+    pub fn get_remote_addr(&self) -> SocketAddr {
+        self.audio_service_address
     }
 }
 

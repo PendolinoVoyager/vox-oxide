@@ -4,11 +4,13 @@
 
 mod app_config;
 mod client_config;
+use std::str::FromStr;
+
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use rustls::crypto;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{Layer, fmt, layer::SubscriberExt};
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt};
 
 use crate::{app::App, audio::audio_manager};
 
@@ -31,11 +33,16 @@ async fn main() -> Result<()> {
             .compact()
             .with_writer(log_file)
             .with_ansi(false)
-            .with_filter(LevelFilter::from_level(tracing::Level::INFO)),
+            .with_filter(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::from_str(&opt.log_level).unwrap().into())
+                    .from_env()?
+                    .add_directive("rvoip_rtp_core=off".parse()?),
+            ),
     );
     tracing::subscriber::set_global_default(subscriber)?;
-
     tracing::info!("App starting up...");
+    tracing::info!("Loaded config: {:?}", &opt);
 
     color_eyre::install().map_err(|e| anyhow!(e))?;
     let audio_manager = audio_manager::AudioManager::new(opt.clone());

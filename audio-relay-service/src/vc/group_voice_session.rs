@@ -10,7 +10,6 @@ use std::{
     },
 };
 
-use hound::WavSpec;
 use quinn::Connection;
 use ringbuf::{
     StaticRb,
@@ -54,7 +53,7 @@ impl GroupVoiceSessionMember {
                         Ok(mixed) => {
                             // Send to client - if their connection is bad,
                             // only THEY are affected
-                            self.connection.send_datagram(mixed.payload)?;
+                            self.connection.send_datagram(mixed.serialize()?)?;
                         }
                         // We lagged behind - broadcast dropped some packets for us.
                         // Log and continue; other members are unaffected.
@@ -94,9 +93,8 @@ pub struct GroupVoiceSession {
     shared_audio_receiver: Mutex<mpsc::Receiver<(u32, RtpPacket)>>,
     /// Per-member jitter buffers keyed by ssrc/user_id
     members: Arc<Mutex<HashMap<u32, StaticRb<RtpPacket, RTP_PACKET_RB_SIZE>>>>,
-    decoder: Mutex<opus::Decoder>,
     encoder: Mutex<opus::Encoder>,
-    wav_writer: Mutex<hound::WavWriter<std::fs::File>>,
+    decoder: Mutex<opus::Decoder>,
 }
 
 impl GroupVoiceSession {
@@ -109,27 +107,10 @@ impl GroupVoiceSession {
             shared_audio_receiver: Mutex::new(shared_audio_receiver),
             mixed_sender,
             members: Arc::new(Mutex::new(HashMap::with_capacity(10))),
-            decoder: Mutex::new(opus::Decoder::new(48000, opus::Channels::Mono).unwrap()),
             encoder: Mutex::new(
                 opus::Encoder::new(48000, opus::Channels::Mono, opus::Application::Voip).unwrap(),
             ),
-            wav_writer: Mutex::new(
-                hound::WavWriter::new(
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(true)
-                        .open("test.wav")
-                        .unwrap(),
-                    WavSpec {
-                        channels: 1,
-                        sample_rate: 48000,
-                        bits_per_sample: 16,
-                        sample_format: hound::SampleFormat::Int,
-                    },
-                )
-                .unwrap(),
-            ),
+            decoder: Mutex::new(opus::Decoder::new(48000, opus::Channels::Mono).unwrap()),
         }
     }
 
@@ -183,9 +164,8 @@ impl GroupVoiceSession {
 
         let mut pcm_buf: Vec<i16> = vec![0i16; FRAME_SIZE];
         let mut combined_pcm: Vec<i16> = vec![0i16; FRAME_SIZE];
-        let mut opus_buf: Vec<u8> = vec![0u8; 4000]; // encode() needs pre-sized slice, not capacity
+        let mut opus_buf: Vec<u8> = vec![0u8; 4000];
         let mut has_audio = false;
-
         let mut decoder = self.decoder.lock().await;
 
         // First collect ALL packets into combined_pcm, THEN mix
@@ -212,12 +192,7 @@ impl GroupVoiceSession {
         if !has_audio {
             return;
         }
-
-        // Encoder should be cached on the struct, not recreated every tick
         let mut encoder = self.encoder.lock().await;
-        for sample in &combined_pcm {
-            self.wav_writer.lock().await.write_sample(*sample).unwrap();
-        }
         match encoder.encode(&combined_pcm, &mut opus_buf) {
             Ok(n) => {
                 opus_buf.truncate(n);

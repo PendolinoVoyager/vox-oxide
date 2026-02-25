@@ -3,11 +3,14 @@ use std::sync::Mutex;
 
 use lib_common_voxoxide::types::ArsAuthRequest;
 use quinn::{Connection, VarInt};
+use rvoip_rtp_core::RtpPacket;
 use tokio::sync::mpsc::Receiver;
 
+use crate::audio::audio_sink::AudioSink;
+use crate::audio::create_audio_connection;
 use crate::{
     app_config::AppConfig,
-    audio::{self, create_audio_connection},
+    audio::{self},
 };
 
 #[repr(u8)]
@@ -16,6 +19,7 @@ pub enum AudioManagerSignal {
     EXIT,
     MUTE,
     UNMUTE,
+    SETVOLUME(f32),
 }
 impl std::fmt::Display for AudioManagerSignal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -23,6 +27,7 @@ impl std::fmt::Display for AudioManagerSignal {
             AudioManagerSignal::EXIT => "EXIT",
             AudioManagerSignal::MUTE => "MUTE",
             AudioManagerSignal::UNMUTE => "UNMUTE",
+            AudioManagerSignal::SETVOLUME(_) => "SETVOLUME",
         })
     }
 }
@@ -38,7 +43,7 @@ pub struct RoomActiveAudioSession {
 #[derive(Debug, Default)]
 pub struct AudioManagerInternalData {
     pub active_session: Option<RoomActiveAudioSession>,
-    pub stream_error: Option<anyhow::Error>,
+    pub stream_error: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     pub muted: bool,
     pub signal_sender: Option<tokio::sync::mpsc::Sender<AudioManagerSignal>>,
     pub state: AudioManagerState,
@@ -63,7 +68,6 @@ pub enum AudioManagerState {
     Connecting,
     Connected,
     Errored,
-    Finished,
 }
 
 #[derive(Debug)]
@@ -79,17 +83,54 @@ impl AudioManager {
             internal_data: Arc::new(Mutex::new(AudioManagerInternalData::default())),
         }
     }
-    pub fn join_room(&mut self, room_id: u32) {
-        tracing::info!("{:?}", self.get_state());
+    pub fn join_room(&mut self, room_id: u32) -> anyhow::Result<()> {
+        let receiver = self.cleanup_and_init_for_connection(room_id)?;
+
+        let config = self.app_config.clone();
+        let data = self.internal_data.clone();
+        tokio::spawn(async move {
+            if let Err(e) = Self::handle_audio_streaming(config, receiver, data.clone()).await {
+                tracing::error!("Error while connecting: {e}");
+                let mut data = data.lock().unwrap();
+                data.cleanup();
+                data.state = AudioManagerState::Errored;
+                data.stream_error = Some(e.into_boxed_dyn_error());
+            }
+        });
+        Ok(())
+    }
+    #[cfg(test)]
+    async fn join_room_async(&mut self, room_id: u32) -> anyhow::Result<()> {
+        let receiver = self.cleanup_and_init_for_connection(room_id)?;
+
+        let config = self.app_config.clone();
+        let data = self.internal_data.clone();
+
+        if let Err(e) = Self::handle_audio_streaming(config, receiver, data.clone()).await {
+            tracing::error!("Error while connecting: {e}");
+            let mut data = data.lock().unwrap();
+            data.cleanup();
+            data.state = AudioManagerState::Errored;
+            return Err(e);
+        }
+        Ok(())
+    }
+    fn cleanup_and_init_for_connection(
+        &self,
+        room_id: u32,
+    ) -> anyhow::Result<Receiver<AudioManagerSignal>> {
         if matches!(
             self.get_state(),
             AudioManagerState::Connected | AudioManagerState::Connecting
         ) {
             tracing::warn!("Already in a room");
-            return;
+            return Err(anyhow::anyhow!("Already in a room"));
         }
 
-        let mut data = self.internal_data.lock().unwrap();
+        let mut data = self
+            .internal_data
+            .lock()
+            .expect("Audio manager data not avaialable!");
         data.cleanup();
         data.state = AudioManagerState::Connecting;
 
@@ -97,32 +138,15 @@ impl AudioManager {
 
         let (sender, receiver) = tokio::sync::mpsc::channel(12);
         data.signal_sender = Some(sender.clone());
-
-        let shared_data = self.internal_data.clone();
-        drop(data); // IMPORTANT: release lock before spawning
-
-        let config = self.app_config.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                Self::handle_audio_streaming(config, receiver, shared_data.clone()).await
-            {
-                tracing::error!("ARS Connection error: {e}");
-                let mut data = shared_data.lock().unwrap();
-                data.cleanup();
-                data.state = AudioManagerState::Errored;
-                data.stream_error = Some(e);
-            }
-        });
+        Ok(receiver)
     }
-
     async fn handle_audio_streaming(
         config: AppConfig,
         mut receiver: Receiver<AudioManagerSignal>,
         shared_data: Arc<Mutex<AudioManagerInternalData>>,
     ) -> anyhow::Result<()> {
         let mut connection = create_audio_connection(config).await?;
-        let play = !shared_data.lock().unwrap().muted;
-        Self::authenticate_audio_connection(&mut connection)
+        authenticate_audio_connection(&mut connection)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(
@@ -130,11 +154,14 @@ impl AudioManager {
                     connection.close_reason()
                 )
             })?;
+        let play = !shared_data.lock().unwrap().muted;
+        let mut audio_source = audio::audio_source::RTPOpusAudioSource::new(false)?;
         // only after authenticating are we in a session
         shared_data.lock().unwrap().active_session = Some(RoomActiveAudioSession::default());
         shared_data.lock().unwrap().state = AudioManagerState::Connected;
 
-        let mut audio_source = audio::audio_source::RTPOpusAudioSource::new(play)?;
+        audio_source.set_playing(play).await;
+        let mut audio_sink = AudioSink::new()?;
         loop {
             tokio::select! {
 
@@ -145,7 +172,7 @@ impl AudioManager {
                         AudioManagerSignal::EXIT => {
                             connection.close(VarInt::from_u32(0), b"done");
                             shared_data.lock().unwrap().cleanup();
-                            shared_data.lock().unwrap().state = AudioManagerState::Finished;
+                            shared_data.lock().unwrap().state = AudioManagerState::Idle;
                             break;
                         }
                         AudioManagerSignal::MUTE => {
@@ -158,9 +185,18 @@ impl AudioManager {
                             let mut state = shared_data.lock().unwrap();
                             state.muted = false;
                         }
+                        AudioManagerSignal::SETVOLUME(v) => {
+                            audio_sink.set_volume(v);
+                        }
                     }
                 }
+                Ok(dgram) = connection.read_datagram() => {
+                    match RtpPacket::parse(&dgram) {
+                        Ok(packet) => audio_sink.write_packet(packet)?,
+                        Err(e) => tracing::warn!("RTP Packet cannot be parsed: {e}")
+                    }
 
+                }
                 Some(packet) = audio_source.read() => {
                     let bytes = packet.serialize().unwrap();
                     if let Err(e) = connection.send_datagram(bytes) {
@@ -170,7 +206,7 @@ impl AudioManager {
                 }
             }
         }
-
+        connection.close(0u8.into(), b"end stream");
         Ok(())
     }
 
@@ -192,6 +228,12 @@ impl AudioManager {
             });
         }
     }
+    pub fn set_volume(&self, volume: f32) {
+        let state = self.internal_data.lock().unwrap();
+        if let Some(signal_sender) = &state.signal_sender {
+            let _ = signal_sender.try_send(AudioManagerSignal::SETVOLUME(volume));
+        }
+    }
 
     pub fn get_muted(&self) -> bool {
         return self.internal_data.lock().unwrap().muted;
@@ -211,14 +253,67 @@ impl AudioManager {
             .as_ref()
             .map(|e| e.to_string())
     }
+}
 
-    async fn authenticate_audio_connection(connection: &mut Connection) -> anyhow::Result<()> {
-        let (mut rx, mut tx) = connection.open_bi().await?;
-        rx.write_all(&serde_json::ser::to_vec(&ArsAuthRequest::new()).unwrap()[..])
-            .await?;
-        rx.finish()?;
-        let response = tx.read_to_end(1024).await?;
-        tracing::info!("{}", String::from_utf8_lossy(&response));
-        Ok(())
+pub(crate) async fn authenticate_audio_connection(
+    connection: &mut Connection,
+) -> anyhow::Result<()> {
+    let (mut rx, mut tx) = connection.open_bi().await?;
+    rx.write_all(&serde_json::ser::to_vec(&ArsAuthRequest::new()).unwrap()[..])
+        .await?;
+    rx.finish()?;
+    let response = tx.read_to_end(1024).await?;
+    tracing::info!("{}", String::from_utf8_lossy(&response));
+    Ok(())
+}
+
+#[cfg(test)]
+mod audio_manager_tests {
+    use std::{net::SocketAddr, str::FromStr};
+
+    use rustls::crypto::CryptoProvider;
+
+    use crate::{
+        app_config::AppConfig,
+        audio::audio_manager::{AudioManager, AudioManagerState},
+    };
+    fn create_test_config() -> AppConfig {
+        let _ = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider());
+        AppConfig {
+            audio_service_address: SocketAddr::from_str("127.0.0.1:4433").unwrap(),
+            host: None,
+            cert_path: Some("../dev-certs/dev-ca.pem".into()),
+            bind: SocketAddr::from_str("127.0.0.1:0").unwrap(),
+            log_file: "/dev/null".into(),
+            log_level: "info".into(),
+        }
+    }
+    #[tokio::test]
+    async fn should_create_idle_manager() {
+        let app_config = create_test_config();
+        let audio_manager = AudioManager::new(app_config);
+        assert_eq!(audio_manager.get_state(), AudioManagerState::Idle)
+    }
+    #[tokio::test]
+
+    async fn should_error_on_no_connection() {
+        let app_config = create_test_config();
+        let mut audio_manager = AudioManager::new(app_config);
+        let res = audio_manager.join_room_async(10).await;
+        assert!(matches!(
+            audio_manager.get_state(),
+            AudioManagerState::Errored
+        ));
+        assert!(res.is_err())
+    }
+    #[tokio::test]
+    async fn should_not_join_room_on_connecting_or_connected() {
+        let app_config = create_test_config();
+        let mut audio_manager = AudioManager::new(app_config);
+        audio_manager.set_state(AudioManagerState::Connected);
+        assert!(audio_manager.join_room(10).is_err());
+
+        audio_manager.set_state(AudioManagerState::Connecting);
+        assert!(audio_manager.join_room(10).is_err());
     }
 }
